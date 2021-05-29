@@ -142,7 +142,10 @@ func registerDev(d Dev, multi bool) error {
 		}
 		// TODO(maruel): UART
 	case *FT232R:
-		// TODO(maruel): SPI, UART
+		// TODO(maruel): UART
+		if err := spireg.Register(name, nil, -1, t.SPI); err != nil {
+			return err
+		}
 	}
 	return nil
 }
