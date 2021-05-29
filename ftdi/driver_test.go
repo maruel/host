@@ -24,7 +24,12 @@ func TestDriver(t *testing.T) {
 			DevType: uint32(DevTypeFT232R),
 			Vid:     0x0403,
 			Pid:     0x6014,
-			Data:    [][]byte{{}, {0}},
+			Data: [][]byte{
+				// flushPending
+				{},
+				// read after write
+				make([]byte, 62),
+			},
 		}
 		return d, 0
 	}
