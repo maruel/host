@@ -51,17 +51,8 @@ func open(opener func(i int) (d2xx.Handle, d2xx.Err), i int) (Dev, error) {
 		return nil, err
 	}
 	if err := h.Init(); err != nil {
-		// setupCommon() takes the device in its previous state. It could be in an
-		// unexpected state, so try resetting it first.
-		if err := h.Reset(); err != nil {
-			_ = h.Close()
-			return nil, err
-		}
-		if err := h.Init(); err != nil {
-			_ = h.Close()
-			return nil, err
-		}
-		// The second attempt worked.
+		_ = h.Close()
+		return nil, err
 	}
 	// Makes a copy of the handle.
 	g := generic{index: i, h: h, name: h.t.String()}

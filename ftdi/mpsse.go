@@ -159,6 +159,8 @@ const (
 //
 // Use only one of Init or InitMPSSE.
 func (h *handle) InitMPSSE() error {
+	// https://ftdichip.com/wp-content/uploads/2020/08/AN_135_MPSSE_Basics.pdf
+	// or
 	// http://www.ftdichip.com/Support/Documents/AppNotes/AN_255_USB%20to%20I2C%20Example%20using%20the%20FT232H%20and%20FT201X%20devices.pdf
 	// Pre-state:
 	// - Write EEPROM i.IsFifo = true so the device DBus is started in tristate.
@@ -169,7 +171,7 @@ func (h *handle) InitMPSSE() error {
 	if h.mpsseVerify() != nil {
 		// Do a full reset. Just trying to set the MPSSE controller will
 		// likely not work. That's a layering violation (since the retry with reset
-		// is done in driver.go) but we've survived worse things...
+		// should be done in driver.go) but we've survived worse things...
 		//
 		// TODO(maruel): This is not helping in practice, this need to be fine
 		// tuned.
@@ -188,6 +190,16 @@ func (h *handle) InitMPSSE() error {
 		}
 	}
 
+	/*
+		// That does the magic thing.
+		if err := h.SetBitMode(0, bitModeMpsse); err != nil {
+			return err
+		}
+		if err := h.mpsseVerify(); err != nil {
+			return err
+		}
+	*/
+
 	// Initialize MPSSE to a known state.
 	// Reset the clock since it is impossible to read back the current clock rate.
 	// Reset all the GPIOs are inputs since it is impossible to read back the
@@ -197,7 +209,7 @@ func (h *handle) InitMPSSE() error {
 		gpioSetC, 0x00, 0x00,
 		gpioSetD, 0x00, 0x00,
 	}
-	if _, err := h.Write(cmd); err != nil {
+	if err := h.WriteNoReply(cmd); err != nil {
 		return err
 	}
 	// Success!!
@@ -221,13 +233,7 @@ func (h *handle) mpsseVerify() error {
 		if _, err := h.Write(b[:]); err != nil {
 			return fmt.Errorf("ftdi: MPSSE verification failed: %w", err)
 		}
-		p, e := h.h.GetQueueStatus()
-		if e != 0 {
-			return toErr("Read/GetQueueStatus", e)
-		}
-		if p != 2 {
-			return fmt.Errorf("ftdi: MPSSE verification failed: expected 2 bytes reply, got %d bytes", p)
-		}
+
 		ctx, cancel := context200ms()
 		defer cancel()
 		if _, err := h.ReadAll(ctx, b[:]); err != nil {
@@ -258,7 +264,7 @@ func (h *handle) MPSSERegRead(addr uint16) (byte, error) {
 
 // MPSSEClock sets the clock at the closest value and returns it.
 func (h *handle) MPSSEClock(f physic.Frequency) (physic.Frequency, error) {
-	// TODO(maruel): Memory clock and skip if the same value.
+	// TODO(maruel): Memorize clock and skip if the same value.
 	clk := clock30MHz
 	base := 30 * physic.MegaHertz
 	div := base / f
@@ -270,8 +276,9 @@ func (h *handle) MPSSEClock(f physic.Frequency) (physic.Frequency, error) {
 			return 0, errors.New("ftdi: clock frequency is too low")
 		}
 	}
-	b := [...]byte{clk, clockSetDivisor, byte(div - 1), byte((div - 1) >> 8)}
-	_, err := h.Write(b[:])
+	div--
+	b := [...]byte{clk, clockSetDivisor, byte(div), byte(div >> 8)}
+	err := h.WriteNoReply(b[:])
 	return base / div, err
 }
 
@@ -300,6 +307,12 @@ func mpsseTxOp(w, r bool, ew, er gpio.Edge, lsbf bool) byte {
 //
 // It can only do it on a multiple of 8 bits.
 func (h *handle) MPSSETx(w, r []byte, ew, er gpio.Edge, lsbf bool) error {
+	if ew == er {
+		return errors.New("ftdi: edges can't match")
+	}
+	if (ew != gpio.RisingEdge && ew != gpio.FallingEdge) || (er != gpio.RisingEdge && er != gpio.FallingEdge) {
+		return errors.New("ftdi: edge must be RisingEdge or FallingEdge")
+	}
 	l := len(w)
 	if len(w) != 0 {
 		// TODO(maruel): This is easy to fix by daisy chaining operations.
@@ -321,19 +334,20 @@ func (h *handle) MPSSETx(w, r []byte, ew, er gpio.Edge, lsbf bool) error {
 
 	// Flush can be useful if rbits != 0.
 	op := mpsseTxOp(len(w) != 0, len(r) != 0, ew, er, lsbf)
-	cmd := []byte{op, byte(l - 1), byte((l - 1) >> 8)}
+	l--
+	cmd := []byte{op, byte(l), byte(l >> 8)}
 	cmd = append(cmd, w...)
 	cmd = append(cmd, flush)
-	if _, err := h.Write(cmd); err != nil {
-		return err
-	}
 	if len(r) != 0 {
+		if _, err := h.Write(cmd); err != nil {
+			return err
+		}
 		ctx, cancel := context200ms()
 		defer cancel()
 		_, err := h.ReadAll(ctx, r)
 		return err
 	}
-	return nil
+	return h.WriteNoReply(cmd)
 }
 
 // MPSSETxShort runs a transaction on the clock pins D0, D1 and D2 for a byte
@@ -391,8 +405,7 @@ func (h *handle) MPSSETxShort(w byte, wbits, rbits int, ew, er gpio.Edge, lsbf b
 // Direction 1 means output, 0 means input.
 func (h *handle) MPSSECBus(mask, value byte) error {
 	b := [...]byte{gpioSetC, value, mask}
-	_, err := h.Write(b[:])
-	return err
+	return h.WriteNoReply(b[:])
 }
 
 // MPSSEDBus operates on 8 GPIOs at a time D0~D7.
@@ -400,8 +413,7 @@ func (h *handle) MPSSECBus(mask, value byte) error {
 // Direction 1 means output, 0 means input.
 func (h *handle) MPSSEDBus(mask, value byte) error {
 	b := [...]byte{gpioSetD, value, mask}
-	_, err := h.Write(b[:])
-	return err
+	return h.WriteNoReply(b[:])
 }
 
 // MPSSECBusRead reads all the CBus pins C0~C7.

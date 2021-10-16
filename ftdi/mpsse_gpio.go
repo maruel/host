@@ -205,7 +205,7 @@ func (g *gpioMPSSE) StreamOut(s gpiostream.Stream) error {
 		return err
 	}
 	logf("StreamOut(%d, %s)", len(b.Bits)*8, f)
-	return g.a.h.MPSSETx(b.Bits, nil, gpio.NoEdge, gpio.NoEdge, b.LSBF)
+	return g.a.h.MPSSETx(b.Bits, nil, gpio.RisingEdge, gpio.FallingEdge, b.LSBF)
 }
 
 /*

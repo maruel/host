@@ -129,6 +129,12 @@ func (h *handle) Init() error {
 	if e := h.h.SetLatencyTimer(1); e != 0 {
 		return toErr("SetLatencyTimer", e)
 	}
+
+	// Even though SetUSBParameters() should have cleared the buffer, there could
+	// still be data so do it explicitly again.
+	if _, e := h.Purge(); e != nil {
+		return nil
+	}
 	return nil
 }
 
@@ -190,6 +196,24 @@ func (h *handle) Flush() error {
 	}
 }
 
+// Purge flushes the read queue.
+func (h *handle) Purge() (int, error) {
+	for t := 0; ; {
+		p, e := h.h.GetQueueStatus()
+		v := int(p)
+		t += v
+		if v == 0 || e != 0 {
+			return t, toErr("Purge/GetQueueStatus", e)
+		}
+		b := make([]byte, v)
+		n, e := h.h.Read(b)
+		t += n
+		if e != 0 {
+			return t, toErr("Purge/Read", e)
+		}
+	}
+}
+
 // Read returns as much as available in the read buffer without blocking.
 func (h *handle) Read(b []byte) (int, error) {
 	// GetQueueStatus() 60µs is relatively slow compared to Read() 4µs,
@@ -200,10 +224,10 @@ func (h *handle) Read(b []byte) (int, error) {
 	// solution.
 	// TODO(maruel): Investigate FT_GetStatus().
 	p, e := h.h.GetQueueStatus()
-	if p == 0 || e != 0 {
-		return int(p), toErr("Read/GetQueueStatus", e)
-	}
 	v := int(p)
+	if v == 0 || e != 0 {
+		return v, toErr("Read/GetQueueStatus", e)
+	}
 	if v > len(b) {
 		v = len(b)
 	}
@@ -261,6 +285,24 @@ func (h *handle) Write(b []byte) (int, error) {
 		}
 	}
 	return len(b), nil
+}
+
+// WriteNoReply blocks until all data is written then asserts that no reply is
+// received.
+//
+// This function is meant for MPSSE commands.
+func (h *handle) WriteNoReply(b []byte) error {
+	if _, err := h.Write(b); err != nil {
+		return err
+	}
+	p, e := h.h.GetQueueStatus()
+	if e != 0 {
+		return toErr("WriteNoReply/GetQueueStatus", e)
+	}
+	if p != 0 {
+		return fmt.Errorf("ftdi: unexpected %d bytes reply after writing %d bytes", p, len(b))
+	}
+	return nil
 }
 
 // ReadEEPROM reads the EEPROM.
